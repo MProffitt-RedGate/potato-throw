@@ -12,14 +12,22 @@ git_repo() { git -C "$REPO" "$@"; }
 
 pull() { git_repo pull -q --ff-only >/dev/null 2>&1; }
 
-publish() { # publish MESSAGE
-  git_repo add game.txt && git_repo commit -q -m "$1" && git_repo push -q 2>&1
+publish() { # publish MESSAGE: commit and push game.txt; on failure restore the pre-publish state
+  local before; before="$(git_repo rev-parse HEAD)"
+  if git_repo add game.txt && git_repo commit -q -m "$1" && git_repo push -q >&2; then
+    return 0
+  fi
+  git_repo reset -q --soft "$before"
+  git_repo reset -q "$before" -- game.txt
+  # Restore game.txt as it was; if it didn't exist before, the caller removes it.
+  git_repo cat-file -e "$before:game.txt" 2>/dev/null && git_repo checkout -q -- game.txt
+  return 1
 }
 
-ask_name() {
+ask_name() { # ask_name PROMPT
   local name
   while true; do
-    printf "Choose a Name: " >&2; read -r name || return 1
+    printf '%s' "$1" >&2; read -r name || return 1
     if [[ -z "$name" || "$name" == *"|"* ]]; then
       echo "A Name can't be empty or contain '|'." >&2
     else
@@ -31,10 +39,27 @@ ask_name() {
 start_game() { # start_game NAME: create the Game with NAME as First Player and Holder
   printf 'holder|%s\nplayer|%s|claimed\n' "$1" "$1" > "$STATE"
   if ! publish "Start the Game: $1 is the First Player"; then
-    # Roll back so a failed push doesn't leave a divergent local Game.
-    git_repo reset -q --soft HEAD~1 && git_repo reset -q -- game.txt
     rm -f "$STATE"
     return 1
+  fi
+}
+
+player_exists() { # case-insensitive, exact match
+  N="$1" awk -F'|' '$1 == "player" && tolower($2) == tolower(ENVIRON["N"]) { found = 1 } END { exit !found }' "$STATE"
+}
+
+invite() {
+  local name
+  name="$(ask_name "Name to invite: ")" || return 0
+  if player_exists "$name"; then
+    echo "There is already a Player called $name."
+    return 0
+  fi
+  printf 'player|%s|unclaimed\n' "$name" >> "$STATE"
+  if publish "Invite $name"; then
+    echo "Invited $name. Tell them yourself: no message is sent."
+  else
+    echo "Couldn't publish the Invite." >&2
   fi
 }
 
@@ -48,8 +73,9 @@ menu() {
     echo "$(holder) has the potato."
   fi
   while true; do
-    printf "[q] quit: "; read -r choice || return 0
+    printf "[i] invite  [q] quit: "; read -r choice || return 0
     case "$choice" in
+      i|I) invite ;;
       q|Q) return 0 ;;
       *) echo "Please choose one of the options." ;;
     esac
@@ -60,7 +86,7 @@ main() {
   pull
   mkdir -p "$CONFIG_DIR"
   if [[ ! -f "$STATE" ]]; then
-    local name; name="$(ask_name)" || exit 1
+    local name; name="$(ask_name "Choose a Name: ")" || exit 1
     printf '%s\n' "$name" > "$NAME_FILE"
     start_game "$name" || { rm -f "$NAME_FILE"; echo "Couldn't publish the Game." >&2; exit 1; }
   fi
