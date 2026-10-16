@@ -63,6 +63,40 @@ invite() {
   fi
 }
 
+unclaimed_names() {
+  awk -F'|' '$1 == "player" && $3 == "unclaimed" { print $2 }' "$STATE"
+}
+
+# claim NAME: mark an invited Name as Claimed (permanent) and publish it.
+claim() {
+  N="$1" awk -F'|' -v OFS='|' '$1 == "player" && $2 == ENVIRON["N"] && $3 == "unclaimed" { $3 = "claimed" } { print }' "$STATE" > "$STATE.new" \
+    && mv "$STATE.new" "$STATE" && publish "Claim $1" >&2
+  local rc=$?
+  rm -f "$STATE.new"
+  return $rc
+}
+
+join_game() { # choose an invited Name to Claim; prints the chosen Name on success
+  local names=() n choice i
+  while IFS= read -r n; do names+=("$n"); done < <(unclaimed_names)
+  if [[ ${#names[@]} -eq 0 ]]; then
+    echo "A Game is already running, but there are no invited Names left to Claim." >&2
+    echo "Ask a Player to Invite you, then launch again." >&2
+    return 1
+  fi
+  echo "A Game is already running. Claim your Name:" >&2
+  for i in "${!names[@]}"; do echo "  $((i+1))) ${names[$i]}" >&2; done
+  while true; do
+    printf 'Your number: ' >&2; read -r choice || return 1
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( 10#$choice >= 1 && 10#$choice <= ${#names[@]} )); then
+      n="${names[$((10#$choice-1))]}"
+      claim "$n" || { echo "Couldn't publish the Claim." >&2; return 1; }
+      printf '%s' "$n"; return 0
+    fi
+    echo "Please choose one of the numbers listed." >&2
+  done
+}
+
 holder() { sed -n 's/^holder|//p' "$STATE"; }
 
 menu() {
@@ -91,8 +125,8 @@ main() {
     start_game "$name" || { rm -f "$NAME_FILE"; echo "Couldn't publish the Game." >&2; exit 1; }
   fi
   if [[ ! -f "$NAME_FILE" ]]; then
-    echo "A Game is already running, but this machine has no Name yet." >&2
-    exit 1
+    local claimed; claimed="$(join_game)" || exit 1
+    printf '%s\n' "$claimed" > "$NAME_FILE"
   fi
   menu "$(cat "$NAME_FILE")"
 }
