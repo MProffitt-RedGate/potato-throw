@@ -270,4 +270,37 @@ main() {
   menu "$(cat "$NAME_FILE")"
 }
 
-main "$@"
+# A link we may replace: dangling, or pointing at a potato-throw script (e.g. another clone).
+is_potato_link() {
+  [[ -L "$1" ]] || return 1
+  [[ ! -e "$1" ]] || grep -q '^# potato-throw' "$1"
+}
+
+install_self() { # symlink this script into ~/.local/bin so `potato` works from anywhere
+  local bin="$HOME/.local/bin" dest="$HOME/.local/bin/potato" verb=Installed
+  mkdir -p "$bin" || return 1
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    if [[ "$(readlink -f "$dest")" == "$SCRIPT" ]]; then
+      verb="Already installed"
+    elif is_potato_link "$dest"; then
+      ln -sfn "$SCRIPT" "$dest" || return 1
+      verb="Re-pointed"
+    else
+      echo "$dest already exists and isn't a link to potato; leaving it alone." >&2
+      return 1
+    fi
+  else
+    ln -s "$SCRIPT" "$dest" || return 1
+  fi
+  echo "$verb: $dest -> $SCRIPT"
+  case ":$PATH:" in
+    *":$bin:"*) ;;
+    *) echo "Note: $bin isn't on your PATH. Add this to your shell profile:  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+  esac
+}
+
+case "${1:-}" in
+  "")      main ;;
+  install) install_self ;;
+  *)       echo "Usage: potato [install]" >&2; exit 2 ;;
+esac
