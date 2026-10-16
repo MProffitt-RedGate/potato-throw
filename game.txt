@@ -1,2 +1,3 @@
 holder|morgan
 player|morgan|claimed
+player|george|unclaimed
