@@ -10,13 +10,32 @@ NAME_FILE="$CONFIG_DIR/name"
 
 git_repo() { git -C "$REPO" "$@"; }
 
-pull() { git_repo pull -q --ff-only >/dev/null 2>&1; }
+# pull: fast-forward only; git's complaint (in English, for sync_remote to classify) goes to stdout.
+pull() { LC_ALL=C git_repo pull -q --ff-only 2>&1 >/dev/null; }
 
 # pull_moved: pull, and succeed only if the remote had new commits (i.e. our push lost a race).
 pull_moved() {
   local before; before="$(git_repo rev-parse HEAD)"
-  pull
+  pull >/dev/null 2>&1
   [[ "$(git_repo rev-parse HEAD)" != "$before" ]]
+}
+
+# sync_remote: pull at launch. Sets SYNC to ok, offline or failed (and SYNC_ERR to git's reason).
+# Anything but "ok" leaves the Game read-only: Throw, Invite and joining need a current view.
+SYNC=ok; SYNC_ERR=""
+sync_remote() {
+  local err
+  if err="$(pull 2>&1)"; then SYNC=ok; return 0; fi
+  SYNC_ERR="$(grep -m1 -iE '^(fatal|error):' <<<"$err" | sed -E 's/^(fatal|error): *//')"
+  # Refusals first: "Could not read from remote repository" also follows a denied login.
+  if grep -qiE 'permission denied|authentication failed|access denied|forbidden|returned error: (401|403|404)|ssl certificate|not possible to fast-forward|unrelated histories|would be overwritten|diverg' <<<"$err"; then
+    SYNC=failed
+  elif grep -qiE 'could not resolve host|temporary failure in name resolution|connection (refused|timed out|reset)|network is unreachable|no route to host|unable to access|could not read from remote repository|does not appear to be a git repository|timed out' <<<"$err"; then
+    SYNC=offline
+  else
+    SYNC=failed
+  fi
+  return 1
 }
 
 publish() { # publish MESSAGE: commit and push game.txt; on failure restore the pre-publish state
@@ -29,6 +48,11 @@ publish() { # publish MESSAGE: commit and push game.txt; on failure restore the 
   # Restore game.txt as it was; if it didn't exist before, the caller removes it.
   git_repo cat-file -e "$before:game.txt" 2>/dev/null && git_repo checkout -q -- game.txt
   return 1
+}
+
+publish_failed() { # publish_failed WHAT
+  echo "Couldn't publish the $1: nothing was changed." >&2
+  echo "Check your connection and that you have push access to the shared repository, then try again." >&2
 }
 
 ask_name() { # ask_name PROMPT
@@ -62,8 +86,13 @@ add_invite() {
   publish "Invite $1" >&2
 }
 
+read_only_reason() { # why Throw, Invite and joining are unavailable (only call when SYNC != ok)
+  if [[ "$SYNC" == offline ]]; then echo "You're offline"; else echo "The shared repository couldn't be updated"; fi
+}
+
 invite() {
   local name rc
+  if [[ "$SYNC" != ok ]]; then echo "$(read_only_reason), so you can't Invite anyone right now."; return 0; fi
   name="$(ask_name "Name to invite: ")" || return 0
   add_invite "$name"; rc=$?
   # Lost a race: re-pull, recheck the Name is still free, retry once.
@@ -71,7 +100,7 @@ invite() {
   case $rc in
     0) echo "Invited $name. Tell them yourself: no message is sent." ;;
     2) echo "There is already a Player called $name." ;;
-    *) echo "Couldn't publish the Invite." >&2 ;;
+    *) publish_failed Invite ;;
   esac
 }
 
@@ -137,6 +166,7 @@ attempt_throw() {
 
 throw() { # throw ME
   local me="$1" names=() n choice i rc
+  if [[ "$SYNC" != ok ]]; then echo "$(read_only_reason), so you can't Throw right now."; return 0; fi
   if [[ "$(holder)" != "$me" ]]; then
     echo "Only the Holder can Throw."
     return 0
@@ -158,7 +188,7 @@ throw() { # throw ME
       case $rc in
         0) echo "You threw the potato to $n." ;;
         2) echo "Too late: $(holder) has the potato now." ;;
-        *) echo "Couldn't publish the Throw." >&2 ;;
+        *) publish_failed Throw ;;
       esac
       return 0
     fi
@@ -186,13 +216,22 @@ show_history() { # the last 5 Throws, newest first
   fi
 }
 
+show_sync_warning() {
+  case "$SYNC" in
+    offline) echo "Warning: offline, may be out of date. Showing the last-known state; Throw and Invite are unavailable." ;;
+    failed)  echo "Warning: Couldn't update from the shared repository${SYNC_ERR:+ ($SYNC_ERR)}." ; echo "Showing the last-known state; Throw and Invite are unavailable until this is fixed." ;;
+  esac
+}
+
 menu() {
   local me="$1" choice options
+  show_sync_warning
   show_holder "$me"
   show_history
   while true; do
     options="[i] invite  [q] quit"
     [[ "$(holder)" == "$me" ]] && options="[t] throw  $options"
+    [[ "$SYNC" != ok ]] && options="[q] quit"
     printf '%s: ' "$options"; read -r choice || return 0
     case "$choice" in
       t|T) throw "$me"; show_holder "$me"; show_history ;;
@@ -204,14 +243,27 @@ menu() {
 }
 
 main() {
-  pull
+  sync_remote
   mkdir -p "$CONFIG_DIR"
   if [[ ! -f "$STATE" ]]; then
+    if [[ "$SYNC" != ok ]]; then
+      if [[ "$SYNC" == offline ]]; then
+        echo "Can't reach the shared repository, so I can't tell whether a Game already exists." >&2
+        echo "Try again when you're online." >&2
+      else
+        echo "Couldn't update from the shared repository${SYNC_ERR:+ ($SYNC_ERR)}, so I can't tell whether a Game already exists." >&2
+      fi
+      exit 1
+    fi
     local name; name="$(ask_name "Choose a Name: ")" || exit 1
     printf '%s\n' "$name" > "$NAME_FILE"
     start_game "$name" || { rm -f "$NAME_FILE"; echo "Couldn't publish the Game." >&2; exit 1; }
   fi
   if [[ ! -f "$NAME_FILE" ]]; then
+    if [[ "$SYNC" != ok ]]; then
+      echo "$(read_only_reason), and you need an up-to-date view to join. Get online and try again." >&2
+      exit 1
+    fi
     local claimed; claimed="$(join_game)" || exit 1
     printf '%s\n' "$claimed" > "$NAME_FILE"
   fi
