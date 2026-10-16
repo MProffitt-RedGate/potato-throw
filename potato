@@ -152,15 +152,28 @@ show_holder() { # show_holder ME
   fi
 }
 
+show_history() { # the last 5 Throws, newest first
+  local lines
+  lines="$(awk -F'|' '$1 == "throw" { n++; from[n] = $2; to[n] = $3; at[n] = $4 }
+    END { for (i = n; i > 0 && i > n - 5; i--) printf "  %s -> %s  (%s)\n", from[i], to[i], at[i] }' "$STATE")"
+  if [[ -n "$lines" ]]; then
+    echo "Last Throws:"
+    echo "$lines"
+  else
+    echo "No Throws yet."
+  fi
+}
+
 menu() {
   local me="$1" choice options
   show_holder "$me"
+  show_history
   while true; do
     options="[i] invite  [q] quit"
     [[ "$(holder)" == "$me" ]] && options="[t] throw  $options"
     printf '%s: ' "$options"; read -r choice || return 0
     case "$choice" in
-      t|T) throw "$me"; show_holder "$me" ;;
+      t|T) throw "$me"; show_holder "$me"; show_history ;;
       i|I) invite ;;
       q|Q) return 0 ;;
       *) echo "Please choose one of the options." ;;
