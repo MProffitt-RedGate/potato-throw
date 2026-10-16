@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run lint)",
+      "Bash(npm run test)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)",
+      "Read(./config/credentials.json)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Bash(rm -rf *)",
+      "Bash(git push --force*)",
+      "Bash(sudo *)",
+      "Bash(chmod 777 *)",
+      "Bash(curl http://*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": ".claude/hooks/bash-firewall.sh" }]
+      },
+      {
+        "matcher": "Read|Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": ".claude/hooks/protect-sensitive-files.py" }]
+      },
+      {
+        "matcher": "*",
+        "hooks": [{
+          "type": "command",
+          "command": "mkdir -p ~/.claude && echo \"$(date -Is) user=${USER} tool=$(jq -r '.tool_name // \"unknown\"')\" >> ~/.claude/audit.log"
+        }]
+      }
+    ]
+  }
+}
