@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# potato-throw: an asynchronous game of hot potato. See GLOSSARY.md.
+set -u
+
+SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
+REPO="$(dirname "$SCRIPT")"
+STATE="$REPO/game.txt"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/potato-throw"
+NAME_FILE="$CONFIG_DIR/name"
+
+git_repo() { git -C "$REPO" "$@"; }
+
+pull() { git_repo pull -q --ff-only >/dev/null 2>&1; }
+
+publish() { # publish MESSAGE
+  git_repo add game.txt && git_repo commit -q -m "$1" && git_repo push -q 2>&1
+}
+
+ask_name() {
+  local name
+  while true; do
+    printf "Choose a Name: " >&2; read -r name || return 1
+    if [[ -z "$name" || "$name" == *"|"* ]]; then
+      echo "A Name can't be empty or contain '|'." >&2
+    else
+      printf '%s' "$name"; return
+    fi
+  done
+}
+
+start_game() { # start_game NAME: create the Game with NAME as First Player and Holder
+  printf 'holder|%s\nplayer|%s|claimed\n' "$1" "$1" > "$STATE"
+  if ! publish "Start the Game: $1 is the First Player"; then
+    # Roll back so a failed push doesn't leave a divergent local Game.
+    git_repo reset -q --soft HEAD~1 && git_repo reset -q -- game.txt
+    rm -f "$STATE"
+    return 1
+  fi
+}
+
+holder() { sed -n 's/^holder|//p' "$STATE"; }
+
+menu() {
+  local me="$1" choice
+  if [[ "$(holder)" == "$me" ]]; then
+    echo "You have the potato!"
+  else
+    echo "$(holder) has the potato."
+  fi
+  while true; do
+    printf "[q] quit: "; read -r choice || return 0
+    case "$choice" in
+      q|Q) return 0 ;;
+      *) echo "Please choose one of the options." ;;
+    esac
+  done
+}
+
+main() {
+  pull
+  mkdir -p "$CONFIG_DIR"
+  if [[ ! -f "$STATE" ]]; then
+    local name; name="$(ask_name)" || exit 1
+    printf '%s\n' "$name" > "$NAME_FILE"
+    start_game "$name" || { rm -f "$NAME_FILE"; echo "Couldn't publish the Game." >&2; exit 1; }
+  fi
+  if [[ ! -f "$NAME_FILE" ]]; then
+    echo "A Game is already running, but this machine has no Name yet." >&2
+    exit 1
+  fi
+  menu "$(cat "$NAME_FILE")"
+}
+
+main "$@"
