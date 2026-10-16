@@ -6,3 +6,4 @@ throw|george|morgan|2026-10-16T09:57:09Z
 player|steve|unclaimed
 player|tom|unclaimed
 player|liam|unclaimed
+player|clem|unclaimed
