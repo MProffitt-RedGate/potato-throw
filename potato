@@ -88,7 +88,7 @@ join_game() { # choose an invited Name to Claim; prints the chosen Name on succe
   for i in "${!names[@]}"; do echo "  $((i+1))) ${names[$i]}" >&2; done
   while true; do
     printf 'Your number: ' >&2; read -r choice || return 1
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( 10#$choice >= 1 && 10#$choice <= ${#names[@]} )); then
+    if [[ "$choice" =~ ^[0-9]{1,4}$ ]] && (( 10#$choice >= 1 && 10#$choice <= ${#names[@]} )); then
       n="${names[$((10#$choice-1))]}"
       claim "$n" || { echo "Couldn't publish the Claim." >&2; return 1; }
       printf '%s' "$n"; return 0
@@ -99,16 +99,68 @@ join_game() { # choose an invited Name to Claim; prints the chosen Name on succe
 
 holder() { sed -n 's/^holder|//p' "$STATE"; }
 
-menu() {
-  local me="$1" choice
-  if [[ "$(holder)" == "$me" ]]; then
+other_players() { # other_players ME
+  N="$1" awk -F'|' '$1 == "player" && $2 != ENVIRON["N"] { print $2 }' "$STATE"
+}
+
+# record_throw FROM TO: make TO the Holder and append the Throw record (who, to whom, when).
+record_throw() {
+  local when; when="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  FROM="$1" TO="$2" WHEN="$when" awk -F'|' -v OFS='|' '
+    $1 == "holder" { $2 = ENVIRON["TO"] }
+    { print }
+    END { print "throw", ENVIRON["FROM"], ENVIRON["TO"], ENVIRON["WHEN"] }' "$STATE" > "$STATE.new" \
+    && mv "$STATE.new" "$STATE" && publish "Throw: $1 to $2" >&2
+  local rc=$?
+  rm -f "$STATE.new"
+  return $rc
+}
+
+throw() { # throw ME
+  local me="$1" names=() n choice i
+  if [[ "$(holder)" != "$me" ]]; then
+    echo "Only the Holder can Throw."
+    return 0
+  fi
+  while IFS= read -r n; do names+=("$n"); done < <(other_players "$me")
+  if [[ ${#names[@]} -eq 0 ]]; then
+    echo "You're the only Player. Invite someone first."
+    return 0
+  fi
+  echo "Throw the potato at:"
+  for i in "${!names[@]}"; do echo "  $((i+1))) ${names[$i]}"; done
+  while true; do
+    printf 'Your number: '; read -r choice || return 0
+    if [[ "$choice" =~ ^[0-9]{1,4}$ ]] && (( 10#$choice >= 1 && 10#$choice <= ${#names[@]} )); then
+      n="${names[$((10#$choice-1))]}"
+      if record_throw "$me" "$n"; then
+        echo "You threw the potato to $n."
+      else
+        echo "Couldn't publish the Throw." >&2
+      fi
+      return 0
+    fi
+    echo "Please choose one of the numbers listed."
+  done
+}
+
+show_holder() { # show_holder ME
+  if [[ "$(holder)" == "$1" ]]; then
     echo "You have the potato!"
   else
     echo "$(holder) has the potato."
   fi
+}
+
+menu() {
+  local me="$1" choice options
+  show_holder "$me"
   while true; do
-    printf "[i] invite  [q] quit: "; read -r choice || return 0
+    options="[i] invite  [q] quit"
+    [[ "$(holder)" == "$me" ]] && options="[t] throw  $options"
+    printf '%s: ' "$options"; read -r choice || return 0
     case "$choice" in
+      t|T) throw "$me"; show_holder "$me" ;;
       i|I) invite ;;
       q|Q) return 0 ;;
       *) echo "Please choose one of the options." ;;
