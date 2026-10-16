@@ -49,3 +49,28 @@ check() { # check DESC CONDITION-COMMAND...
   if "$@"; then echo "  ok   - $desc"; else echo "  FAIL - $desc"; FAILS=$((FAILS+1)); fi
 }
 contains() { [[ "$1" == *"$2"* ]]; }
+
+# Interleaved sessions: drive one long-running ./potato through a fifo, so other
+# Players can act between its inputs. One session at a time.
+session_start() { # session_start MACHINE
+  SESSION_OUT="$WORLD/$1.session.out"; : > "$SESSION_OUT"
+  mkfifo "$WORLD/$1.in"
+  (cd "$WORLD/$1-clone" && XDG_CONFIG_HOME="$WORLD/$1-config" ./potato < "$WORLD/$1.in" > "$SESSION_OUT" 2>&1) &
+  SESSION_PID=$!
+  exec 9>"$WORLD/$1.in"
+}
+session_send() { printf '%s\n' "$1" >&9; }
+session_wait_for() { # session_wait_for TEXT [MIN_OCCURRENCES]: wait up to 10s for TEXT to appear
+  local i; for i in $(seq 100); do
+    (( $(grep -cF -- "$1" "$SESSION_OUT") >= ${2:-1} )) && return 0
+    sleep 0.1
+  done
+  return 1
+}
+session_end() { # close stdin, wait for exit; everything the session said ends up in SESSION_TEXT
+  exec 9>&-
+  local i; for i in $(seq 50); do kill -0 "$SESSION_PID" 2>/dev/null || break; sleep 0.1; done
+  kill "$SESSION_PID" 2>/dev/null
+  wait "$SESSION_PID" 2>/dev/null
+  SESSION_TEXT="$(cat "$SESSION_OUT")"
+}

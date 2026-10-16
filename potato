@@ -12,6 +12,13 @@ git_repo() { git -C "$REPO" "$@"; }
 
 pull() { git_repo pull -q --ff-only >/dev/null 2>&1; }
 
+# pull_moved: pull, and succeed only if the remote had new commits (i.e. our push lost a race).
+pull_moved() {
+  local before; before="$(git_repo rev-parse HEAD)"
+  pull
+  [[ "$(git_repo rev-parse HEAD)" != "$before" ]]
+}
+
 publish() { # publish MESSAGE: commit and push game.txt; on failure restore the pre-publish state
   local before; before="$(git_repo rev-parse HEAD)"
   if git_repo add game.txt && git_repo commit -q -m "$1" && git_repo push -q >&2; then
@@ -48,19 +55,24 @@ player_exists() { # case-insensitive, exact match
   N="$1" awk -F'|' '$1 == "player" && tolower($2) == tolower(ENVIRON["N"]) { found = 1 } END { exit !found }' "$STATE"
 }
 
+# add_invite NAME: 0 = published, 1 = push failed, 2 = the Name is taken.
+add_invite() {
+  player_exists "$1" && return 2
+  printf 'player|%s|unclaimed\n' "$1" >> "$STATE"
+  publish "Invite $1" >&2
+}
+
 invite() {
-  local name
+  local name rc
   name="$(ask_name "Name to invite: ")" || return 0
-  if player_exists "$name"; then
-    echo "There is already a Player called $name."
-    return 0
-  fi
-  printf 'player|%s|unclaimed\n' "$name" >> "$STATE"
-  if publish "Invite $name"; then
-    echo "Invited $name. Tell them yourself: no message is sent."
-  else
-    echo "Couldn't publish the Invite." >&2
-  fi
+  add_invite "$name"; rc=$?
+  # Lost a race: re-pull, recheck the Name is still free, retry once.
+  if [[ $rc -eq 1 ]] && pull_moved; then add_invite "$name"; rc=$?; fi
+  case $rc in
+    0) echo "Invited $name. Tell them yourself: no message is sent." ;;
+    2) echo "There is already a Player called $name." ;;
+    *) echo "Couldn't publish the Invite." >&2 ;;
+  esac
 }
 
 unclaimed_names() {
@@ -113,11 +125,18 @@ record_throw() {
     && mv "$STATE.new" "$STATE" && publish "Throw: $1 to $2" >&2
   local rc=$?
   rm -f "$STATE.new"
-  return $rc
+  [[ $rc -eq 0 ]]
+}
+
+# attempt_throw FROM TO: 0 = thrown, 1 = push failed, 2 = FROM is not the Holder (any more).
+attempt_throw() {
+  [[ "$(holder)" == "$1" ]] || return 2
+  record_throw "$1" "$2" && return 0
+  return 1
 }
 
 throw() { # throw ME
-  local me="$1" names=() n choice i
+  local me="$1" names=() n choice i rc
   if [[ "$(holder)" != "$me" ]]; then
     echo "Only the Holder can Throw."
     return 0
@@ -133,11 +152,14 @@ throw() { # throw ME
     printf 'Your number: '; read -r choice || return 0
     if [[ "$choice" =~ ^[0-9]{1,4}$ ]] && (( 10#$choice >= 1 && 10#$choice <= ${#names[@]} )); then
       n="${names[$((10#$choice-1))]}"
-      if record_throw "$me" "$n"; then
-        echo "You threw the potato to $n."
-      else
-        echo "Couldn't publish the Throw." >&2
-      fi
+      attempt_throw "$me" "$n"; rc=$?
+      # Lost a race: re-pull, recheck we are still the Holder, retry once.
+      if [[ $rc -eq 1 ]] && pull_moved; then attempt_throw "$me" "$n"; rc=$?; fi
+      case $rc in
+        0) echo "You threw the potato to $n." ;;
+        2) echo "Too late: $(holder) has the potato now." ;;
+        *) echo "Couldn't publish the Throw." >&2 ;;
+      esac
       return 0
     fi
     echo "Please choose one of the numbers listed."
